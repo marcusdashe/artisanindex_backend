@@ -4,8 +4,11 @@ import jakarta.persistence.EntityManager
 import jakarta.servlet.http.HttpServletResponse
 import org.apache.poi.ss.usermodel.*
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
+import org.cstemp.artisanindex.dto.ArtisanRequest
+import org.cstemp.artisanindex.dto.ArtisanResponse
 import org.cstemp.artisanindex.programme.Programme
 import org.cstemp.artisanindex.programme.ProgrammeRepo
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
@@ -14,11 +17,43 @@ import org.springframework.web.multipart.MultipartFile
 @Service
 class ArtisanService(private val artisanRepo: ArtisanRepo, private val programmeRepo: ProgrammeRepo, private val entityManager: EntityManager) {
 
+    fun create(body: ArtisanRequest): ResponseEntity<*> {
+        if(body != null){
+            var artisan = Artisan()
+            artisan.fullName = body.fullName
+            if(body.gender.isNotEmpty() && body.gender.trim().lowercase().startsWith("male")){
+                artisan.gender = AppConstants.Gender.MALE
+            } else if(body.gender.isNotEmpty() && body.gender.trim().lowercase().startsWith("female")){
+                artisan.gender = AppConstants.Gender.MALE
+            } else {
+                artisan.gender = AppConstants.Gender.OTHER
+            }
+            artisan.city = body.city
+            artisan.state = body.state
+            artisan.phoneNumber = body.phoneNumber
+            artisan.trade = body.trade
+
+            var programme = Programme()
+            programme.title = body.programme
+            artisan.addProgramme(programme)
+
+            try {
+                artisanRepo.save(artisan)
+            } catch (e: Exception) {
+               return ResponseEntity.badRequest().body( e.message)
+            }
+            return ResponseEntity.ok().body(artisan)
+        }
+        return ResponseEntity
+            .badRequest()
+            .body(null);
+
+    }
     fun fetchArtisanBySearch(searchInput: String?, selectedValue: String?): List<Artisan?>? {
         if (searchInput.isNullOrBlank() && selectedValue.isNullOrBlank()) {
             return null
         }
-        var response =  when(selectedValue?.trim()) {
+        val response =  when(selectedValue?.trim()) {
             "trade" -> {
                     if(searchInput != null)
                         artisanRepo.findByTradeContainingIgnoreCase(searchInput.trim())
@@ -50,7 +85,7 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
                     artisanRepo.findAll()
             }
             "gender" -> {
-                    if(searchInput != null && searchInput.lowercase().trim().startsWith("male"))
+                    if(searchInput != null && searchInput.trim().lowercase().startsWith("male"))
                         artisanRepo.findByGender(AppConstants.Gender.MALE)
                     else if(searchInput != null && searchInput.lowercase().trim().startsWith("female"))
                         artisanRepo.findByGender(AppConstants.Gender.FEMALE)
@@ -58,13 +93,48 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
                     artisanRepo.findAll()
             }
 
+//            "programme" -> {
+//                if(searchInput != null){
+//                    val programmeList = programmeRepo.findByTitleContainingIgnoreCase(searchInput)
+//                    val artisans = mutableListOf<Artisan?>()
+//                    for(programme in programmeList){
+//                        artisans.addAll(programmeRepo.findArtisansByProgramme(programme))
+//                    }
+//                    artisans
+//                }
+//                else
+//                    null
+//            }
+
             else -> return null
         }
         return response
     }
 
-    fun fetchAllArtisans(): List<Artisan?> {
-        return artisanRepo.findAll()
+    fun fetchAllArtisans(): MutableList<ArtisanResponse> {
+        val artisans = artisanRepo.findAll()
+
+        val refinedArtisans = mutableListOf<ArtisanResponse>()
+        for(artisan in artisans) {
+            val artisanData = ArtisanResponse()
+            artisanData.id = artisan.id.toString()
+            artisanData.fullName = artisan.fullName.toString()
+            artisanData.state = artisan.state.toString()
+            artisanData.trade = artisan.trade.toString()
+            artisanData.city = artisan.city.toString()
+            artisanData.gender = artisan.gender.toString()
+            artisanData.phoneNumber = artisan.phoneNumber.toString()
+
+            val stringBuilder = StringBuilder()
+            val programmes = programmeRepo.findByArtisan(artisan)
+            for(programme in programmes){
+                stringBuilder.append(programme.title)
+                stringBuilder.append(",")
+            }
+            artisanData.programme = stringBuilder.toString()
+            refinedArtisans.add(artisanData)
+        }
+        return refinedArtisans
     }
 
     fun findByPhoneNumber(phoneNumber: String): Artisan? {
@@ -150,7 +220,7 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
     }
 
     fun getAllArtisansaAsExcelSpreadSheet(response: HttpServletResponse) {
-        val artisans: List<Artisan>? = artisanRepo.findAll()
+        val artisans: List<Artisan> = artisanRepo.findAll()
         val workbook: Workbook = XSSFWorkbook()
         val sheet: Sheet = workbook.createSheet("Artisans Table")
         val headerRow = sheet.createRow(0)
@@ -193,4 +263,46 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
             //        return artisans
             }
         }
+
+    fun fetchAllArtisanBySearchFilterAndReturnSpreadsheet(searchInput: String?, selectedValue: String?, response: HttpServletResponse ) {
+       val artisans = fetchArtisanBySearch(searchInput, selectedValue)
+        val workbook: Workbook = XSSFWorkbook()
+        val sheet: Sheet = workbook.createSheet("Filtered Artisans Table")
+        val headerRow = sheet.createRow(0)
+        headerRow.createCell(0).setCellValue("Full Name")
+        headerRow.createCell(1).setCellValue("Trade")
+        headerRow.createCell(2).setCellValue("Phone Number")
+        headerRow.createCell(3).setCellValue("State")
+        headerRow.createCell(4).setCellValue("City")
+        headerRow.createCell(5).setCellValue("Gender")
+        headerRow.createCell(6).setCellValue("Training Programme")
+        var rowNum = 1
+        if (artisans != null) {
+            for (rowData in artisans) {
+                val dataRow = sheet.createRow(rowNum++)
+                if (rowData != null) {
+                    dataRow.createCell(0).setCellValue(rowData.fullName)
+
+                dataRow.createCell(1).setCellValue(rowData.trade)
+                dataRow.createCell(2).setCellValue(rowData.phoneNumber)
+                dataRow.createCell(3).setCellValue(rowData.state)
+                dataRow.createCell(4).setCellValue(rowData.city)
+                when(rowData.gender){
+                    AppConstants.Gender.MALE -> dataRow.createCell(5).setCellValue("Male")
+                    AppConstants.Gender.FEMALE -> dataRow.createCell(5).setCellValue("Female")
+                    else -> dataRow.createCell(5).setCellValue("Others")
+                }
+                    val stringBuilder = StringBuilder()
+                    val programmes = programmeRepo.findByArtisan(rowData)
+                    for(programme in programmes){
+                        stringBuilder.append(programme.title)
+                }
+                    dataRow.createCell(6).setCellValue(stringBuilder.toString())
+            }}
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=my-table-data.xlsx");
+            workbook.write(response.getOutputStream());
+            workbook.close();
+    }
+    }
 }
