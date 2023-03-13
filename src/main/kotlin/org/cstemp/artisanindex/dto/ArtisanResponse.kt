@@ -10,4 +10,6 @@ data class ArtisanResponse(
     var state: String = "",
     var trade: String = "",
     var programme: String = "",
+    var batch : String = "",
+    var year: String = "",
 )

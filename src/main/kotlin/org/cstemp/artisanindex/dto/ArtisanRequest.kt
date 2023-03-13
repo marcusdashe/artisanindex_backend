@@ -9,4 +9,5 @@ data class ArtisanRequest(
     var state: String = "",
     var trade: String = "",
     var programme: String = "",
+    var batchYear : String = "",
 )

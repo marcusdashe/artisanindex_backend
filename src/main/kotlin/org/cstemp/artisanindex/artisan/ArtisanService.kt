@@ -2,20 +2,47 @@ package org.cstemp.artisanindex.artisan
 
 import jakarta.persistence.EntityManager
 import jakarta.servlet.http.HttpServletResponse
+import jakarta.transaction.Transactional
 import org.apache.poi.ss.usermodel.*
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.cstemp.artisanindex.dto.ArtisanRequest
 import org.cstemp.artisanindex.dto.ArtisanResponse
+import org.cstemp.artisanindex.programme.ArtisanProgramme
 import org.cstemp.artisanindex.programme.Programme
 import org.cstemp.artisanindex.programme.ProgrammeRepo
-import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.stereotype.Service
 import org.springframework.web.multipart.MultipartFile
+import org.cstemp.artisanindex.programme.ArtisanProgrameRepo
 
 
 @Service
-class ArtisanService(private val artisanRepo: ArtisanRepo, private val programmeRepo: ProgrammeRepo, private val entityManager: EntityManager) {
+class ArtisanService(private val artisanRepo: ArtisanRepo, private val programmeRepo: ProgrammeRepo, private val artisanProgrammeRepo: ArtisanProgrameRepo, private val entityManager: EntityManager) {
+    fun searchArtisansByProgrammeTitle(programmeTitle: String): List<Artisan> {
+        val query = entityManager.createQuery(
+            "SELECT a FROM Artisan a JOIN a.programmes p WHERE p.title = :programmeTitle",
+            Artisan::class.java
+        )
+        query.setParameter("programmeTitle", programmeTitle)
+        return query.resultList
+    }
+
+    @Transactional
+    fun saveArtisanWithProgrammes(artisan: Artisan, programmes: List<Programme?>) {
+        // Save the Artisan
+        val savedArtisan = artisanRepo.save(artisan)
+        // Save the Programmes
+        val savedProgrammes = programmeRepo.saveAll(programmes)
+        // Associate the Artisan with the Programmes
+        savedProgrammes.forEach { programme ->
+            val artisanProgramme = ArtisanProgramme().apply {
+                this.artisan = savedArtisan
+                this.programme = programme
+            }
+            artisanProgrammeRepo.save(artisanProgramme)
+        }
+    }
+
 
     fun create(body: ArtisanRequest): ResponseEntity<*> {
         if(body != null){
@@ -33,12 +60,16 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
             artisan.phoneNumber = body.phoneNumber
             artisan.trade = body.trade
 
-            var programme = Programme()
+            val programme = Programme()
             programme.title = body.programme
-            artisan.addProgramme(programme)
+            when {
+                Regex("\\w+").matches( body.batchYear.trim()) ->  programme.batch = body.batchYear
+                """^\d{4}$""".toRegex().matches( body.batchYear.trim()) ->  programme.year = body.batchYear
+            }
 
             try {
-                artisanRepo.save(artisan)
+                saveArtisanWithProgrammes(artisan, listOf(programme))
+
             } catch (e: Exception) {
                return ResponseEntity.badRequest().body( e.message)
             }
@@ -49,16 +80,186 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
             .body(null);
 
     }
-    fun fetchArtisanBySearch(searchInput: String?, selectedValue: String?): List<Artisan?>? {
-        if (searchInput.isNullOrBlank() && selectedValue.isNullOrBlank()) {
-            return null
+    fun fetchAllArtisans(): MutableList<ArtisanResponse> {
+        val artisans = artisanRepo.findAll()
+
+        val refinedArtisans = mutableListOf<ArtisanResponse>()
+        for(artisan in artisans) {
+            val artisanData = ArtisanResponse()
+            artisanData.id = artisan.id.toString()
+            artisanData.fullName = artisan.fullName.toString()
+            artisanData.state = artisan.state.toString()
+            artisanData.trade = artisan.trade.toString()
+            artisanData.city = artisan.city.toString()
+            artisanData.gender = artisan.gender.toString()
+            artisanData.phoneNumber = artisan.phoneNumber.toString()
+
+
+            val stringBuilder = StringBuilder()
+            val programmes = artisanProgrammeRepo.findAllByArtisan(artisan)
+            for(each in programmes){
+                stringBuilder.append(each.programme?.title ?: "")
+                stringBuilder.append(",")
+                artisanData.batch = each.programme?.batch.toString()
+                artisanData.year = each.programme?.year.toString()
+            }
+            artisanData.programme = stringBuilder.toString()
+//            artisanData.batch =
+
+            refinedArtisans.add(artisanData)
         }
-        val response =  when(selectedValue?.trim()) {
+        return refinedArtisans
+    }
+
+    fun findByPhoneNumber(phoneNumber: String): Artisan? {
+        return entityManager.createQuery("SELECT a FROM Artisan a WHERE a.phoneNumber = :phoneNumber", Artisan::class.java)
+            .setParameter("phoneNumber", phoneNumber)
+            .resultList
+            .firstOrNull()
+    }
+
+    fun findProgrammeByArtisan(entityManager: EntityManager, artisan: Artisan): List<Programme> {
+        val query = entityManager.createQuery("SELECT p FROM Programme p WHERE p.artisan = :artisan", Programme::class.java)
+        query.setParameter("artisan", artisan)
+        return query.resultList
+    }
+
+    fun saveExcelDataToDatabase(multipartfile: MultipartFile): ResponseEntity<String> {
+        val inputStream = multipartfile.inputStream
+        val workbook = WorkbookFactory.create(inputStream)
+        val sheet = workbook.getSheetAt(0)
+        val rowIterator: Iterator<Row> = sheet.iterator()
+        // skip header row
+        if (rowIterator.hasNext()) {
+            rowIterator.next()
+        }
+        while (rowIterator.hasNext()) {
+            val row = rowIterator.next()
+            val artisan = Artisan()
+
+            artisan.fullName = row.getCell(0).stringCellValue
+
+            if (row.getCell(5) != null && row.getCell(5).stringCellValue.equals("male", ignoreCase = true)) {
+                artisan.gender = AppConstants.Gender.MALE
+            } else if (row.getCell(5) != null && row.getCell(5).stringCellValue.equals("female", ignoreCase = true)) {
+                artisan.gender = AppConstants.Gender.FEMALE
+            } else {
+                artisan.gender = AppConstants.Gender.OTHER
+            }
+
+            val cell = row.getCell(2)?.cellType
+            when (cell) {
+                CellType.NUMERIC -> artisan.phoneNumber = row.getCell(2).numericCellValue.toLong().toString()
+                CellType.STRING -> artisan.phoneNumber = row.getCell(2).stringCellValue
+                else -> artisan.phoneNumber = ""
+            }
+
+            artisan.city = row.getCell(4).stringCellValue
+            artisan.state = row.getCell(3).stringCellValue
+            artisan.trade = row.getCell(1).stringCellValue
+            var programmes: MutableList<Programme?> = mutableListOf()
+            if (row.getCell(6).stringCellValue.split(",".toRegex()).dropLastWhile { it.isEmpty() }
+                    .toTypedArray().size > 1) {
+
+                for (s in row.getCell(6).stringCellValue.split(",")) {
+                    val programme = Programme()
+                    programme.title = s
+
+                    val cell2 = row.getCell(7)?.cellType
+                    when (cell2) {
+                        CellType.NUMERIC -> {
+                            when {
+                                Regex("\\w+").matches(
+                                    row.getCell(7).numericCellValue.toString().trim()
+                                ) -> programme.batch = row.getCell(7).numericCellValue.toString().trim()
+
+                                """^\d{4}$""".toRegex().matches(
+                                    (row.getCell(7).numericCellValue.toString().trim())
+                                ) -> programme.year = row.getCell(7).numericCellValue.toString().trim()
+                            }
+                        }
+
+                        CellType.STRING -> {
+                            when {
+                                Regex("\\w+").matches(row.getCell(7).stringCellValue.trim()) -> programme.batch =
+                                    row.getCell(7).stringCellValue.trim()
+
+                                """^\d{4}$""".toRegex()matches((row.getCell(7).stringCellValue.trim())) -> programme.year =
+                                    row.getCell(7).stringCellValue.trim()
+                            }
+                        }
+
+                        else -> {
+                            programme.year = ""
+                            programme.batch = ""
+                        }
+                    }
+                    programmes.add(programme)
+                }
+
+            } else {
+                val programme = Programme()
+                programme.title = row.getCell(6).stringCellValue
+
+                val cell3 = row.getCell(7)?.cellType
+                when (cell3) {
+                    CellType.NUMERIC -> {
+                        when {
+                            Regex("\\w+").matches(
+                                row.getCell(7).numericCellValue.toString().trim()
+                            ) -> programme.batch = row.getCell(7).numericCellValue.toString().trim()
+
+                            """^\d{4}$""".toRegex().matches(
+                                (row.getCell(7).numericCellValue.toString().trim())
+                            ) -> programme.year = row.getCell(7).numericCellValue.toString().trim()
+                        }
+                    }
+
+                    CellType.STRING -> {
+                        when {
+                            Regex("\\w+").matches(row.getCell(7).stringCellValue.trim()) -> programme.batch =
+                                row.getCell(7).stringCellValue.trim()
+
+                            """^\d{4}$""".toRegex().matches((row.getCell(7).stringCellValue.trim())) -> programme.year =
+                                row.getCell(7).stringCellValue.trim()
+                        }
+                    }
+
+                    else -> {
+                        programme.year = ""
+                        programme.batch = ""
+                    }
+                }
+
+                programmes.add(programme)
+            }
+            artisan.trade = row.getCell(1).stringCellValue
+            try{
+                if (findByPhoneNumber(artisan.phoneNumber!!) != null) {
+//                    throw Exception("An Artisan with this phone number already exists")
+                }
+                saveArtisanWithProgrammes(artisan, programmes)
+//                    artisanRepo.save(artisan)
+
+            } catch (e: Exception) {
+                continue
+            }
+
+        }
+        return ResponseEntity.ok().body("Data uploaded successfully")
+    }
+
+    fun fetchArtisanBySearch(searchInput: String?, selectedValue: String?): List<Artisan?> {
+        if (searchInput.isNullOrBlank() && selectedValue.isNullOrBlank()) {
+            return emptyList()
+        }
+
+        return  when(selectedValue?.trim()) {
             "trade" -> {
-                    if(searchInput != null)
-                        artisanRepo.findByTradeContainingIgnoreCase(searchInput.trim())
-                    else
-                        artisanRepo.findAll()
+                if(searchInput != null)
+                    artisanRepo.findByTradeContainingIgnoreCase(searchInput.trim())
+                else
+                    artisanRepo.findAll()
             }
             "phone" -> {
                 if(searchInput != null)
@@ -85,134 +286,27 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
                     artisanRepo.findAll()
             }
             "gender" -> {
-                    if(searchInput != null && searchInput.trim().lowercase().startsWith("male"))
+                when {
+                    searchInput != null && searchInput.trim().lowercase().startsWith("male") ->
                         artisanRepo.findByGender(AppConstants.Gender.MALE)
-                    else if(searchInput != null && searchInput.lowercase().trim().startsWith("female"))
+                    searchInput != null && searchInput.lowercase().trim().startsWith("female") ->
                         artisanRepo.findByGender(AppConstants.Gender.FEMALE)
-                else
+                    else ->
+                        artisanRepo.findAll()
+                }
+            }
+
+            "programme" -> {
+                if (searchInput != null) {
+                    searchArtisansByProgrammeTitle(searchInput)
+                } else {
                     artisanRepo.findAll()
-            }
-
-//            "programme" -> {
-//                if(searchInput != null){
-//                    val programmeList = programmeRepo.findByTitleContainingIgnoreCase(searchInput)
-//                    val artisans = mutableListOf<Artisan?>()
-//                    for(programme in programmeList){
-//                        artisans.addAll(programmeRepo.findArtisansByProgramme(programme))
-//                    }
-//                    artisans
-//                }
-//                else
-//                    null
-//            }
-
-            else -> return null
-        }
-        return response
-    }
-
-    fun fetchAllArtisans(): MutableList<ArtisanResponse> {
-        val artisans = artisanRepo.findAll()
-
-        val refinedArtisans = mutableListOf<ArtisanResponse>()
-        for(artisan in artisans) {
-            val artisanData = ArtisanResponse()
-            artisanData.id = artisan.id.toString()
-            artisanData.fullName = artisan.fullName.toString()
-            artisanData.state = artisan.state.toString()
-            artisanData.trade = artisan.trade.toString()
-            artisanData.city = artisan.city.toString()
-            artisanData.gender = artisan.gender.toString()
-            artisanData.phoneNumber = artisan.phoneNumber.toString()
-
-            val stringBuilder = StringBuilder()
-            val programmes = programmeRepo.findByArtisan(artisan)
-            for(programme in programmes){
-                stringBuilder.append(programme.title)
-                stringBuilder.append(",")
-            }
-            artisanData.programme = stringBuilder.toString()
-            refinedArtisans.add(artisanData)
-        }
-        return refinedArtisans
-    }
-
-    fun findByPhoneNumber(phoneNumber: String): Artisan? {
-        return entityManager.createQuery("SELECT a FROM Artisan a WHERE a.phoneNumber = :phoneNumber", Artisan::class.java)
-            .setParameter("phoneNumber", phoneNumber)
-            .resultList
-            .firstOrNull()
-    }
-
-    fun findProgrammeByArtisan(entityManager: EntityManager, artisan: Artisan): List<Programme> {
-        val query = entityManager.createQuery("SELECT p FROM Programme p WHERE p.artisan = :artisan", Programme::class.java)
-        query.setParameter("artisan", artisan)
-        return query.resultList
-    }
-
-
-    fun saveExcelDataToDatabase(multipartfile: MultipartFile): ResponseEntity<String> {
-        val inputStream = multipartfile.inputStream
-        val workbook = WorkbookFactory.create(inputStream)
-        val sheet = workbook.getSheetAt(0)
-        val rowIterator: Iterator<Row> = sheet.iterator()
-        // skip header row
-        if (rowIterator.hasNext()) {
-            rowIterator.next()
-        }
-        while (rowIterator.hasNext()) {
-            val row = rowIterator.next()
-            val artisan = Artisan()
-
-            artisan.fullName = row.getCell(0).stringCellValue
-
-            if (row.getCell(5) != null && row.getCell(5).stringCellValue.equals("male", ignoreCase = true)) {
-                artisan.gender = AppConstants.Gender.MALE
-            } else if (row.getCell(5) != null && row.getCell(5).stringCellValue.equals("female", ignoreCase = true)) {
-                artisan.gender = AppConstants.Gender.FEMALE
-            } else {
-                artisan.gender = AppConstants.Gender.OTHER
-            }
-
-            val cell = row.getCell(2).cellType
-            when (cell) {
-                CellType.NUMERIC -> artisan.phoneNumber = row.getCell(2).numericCellValue.toLong().toString()
-                CellType.STRING -> artisan.phoneNumber = row.getCell(2).stringCellValue
-                else -> artisan.phoneNumber = ""
-            }
-
-            artisan.city = row.getCell(4).stringCellValue
-            artisan.state = row.getCell(3).stringCellValue
-
-            if (row.getCell(6).stringCellValue.split(",".toRegex()).dropLastWhile { it.isEmpty() }
-                    .toTypedArray().size > 1) {
-                var programme: Programme? = null
-                for (s in row.getCell(6).stringCellValue.split(",")) {
-                    programme = Programme()
-                    programme.title = s
-                    artisan.addProgramme(programme)
                 }
-            } else {
-                val programme = Programme()
-                programme.title = row.getCell(6).stringCellValue
-                artisan.addProgramme(programme)
             }
-            artisan.trade = row.getCell(1).stringCellValue
-            try{
-                if (findByPhoneNumber(artisan.phoneNumber!!) != null) {
-                    throw Exception("An Artisan with this phone number already exists")
-                }
-                artisanRepo.save(artisan)
-            } catch (e: Exception) {
-                continue
-//                throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message)
-//                return ResponseEntity.ok().body("Uploaded Artisanal Spreadsheet records successfully")
-            }
-
-
+            else -> emptyList()
         }
-        return ResponseEntity.ok().body("Uploaded Artisanal Spreadsheet records successfully")
-        }
+    }
+
 
     fun  getAllArtisanByTradeName(trade: String): ResponseEntity<List<Artisan?>?>{
         val artisans: List<Artisan?>? = artisanRepo.findByTrade(trade)
@@ -231,6 +325,7 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
         headerRow.createCell(4).setCellValue("City")
         headerRow.createCell(5).setCellValue("Gender")
         headerRow.createCell(6).setCellValue("Training Programme")
+        headerRow.createCell(7).setCellValue("Batch/Year")
 
 //        Populate row number
         var rowNum = 1
@@ -249,18 +344,24 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
                 }
 
                 val stringBuilder = StringBuilder()
-                val programmes = programmeRepo.findByArtisan(rowData)
-                for(programme in programmes){
-                    stringBuilder.append(programme.title)
+                val stringBuilderBY = StringBuilder()
+                val programmes = artisanProgrammeRepo.findAllByArtisan(rowData)
+                for(each in programmes){
+                    stringBuilder.append(each.programme?.title ?: "")
+                    if(each.programme?.batch?.isNotEmpty() == true)
+                        stringBuilderBY.append(each.programme?.batch?: "")
+                    else
+                        stringBuilderBY.append(each.programme?.year?: "")
                 }
                 dataRow.createCell(6).setCellValue(stringBuilder.toString())
+                dataRow.createCell(7).setCellValue(stringBuilderBY.toString())
             }
             // Set response headers for Excel file download
             response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
             response.setHeader("Content-Disposition", "attachment; filename=my-table-data.xlsx");
             workbook.write(response.getOutputStream());
             workbook.close();
-            //        return artisans
+
             }
         }
 
@@ -276,6 +377,7 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
         headerRow.createCell(4).setCellValue("City")
         headerRow.createCell(5).setCellValue("Gender")
         headerRow.createCell(6).setCellValue("Training Programme")
+        headerRow.createCell(6).setCellValue("Batch/Year")
         var rowNum = 1
         if (artisans != null) {
             for (rowData in artisans) {
@@ -293,12 +395,18 @@ class ArtisanService(private val artisanRepo: ArtisanRepo, private val programme
                     else -> dataRow.createCell(5).setCellValue("Others")
                 }
                     val stringBuilder = StringBuilder()
-                    val programmes = programmeRepo.findByArtisan(rowData)
-                    for(programme in programmes){
-                        stringBuilder.append(programme.title)
+                    val stringBuilderBY = StringBuilder()
+                    val programmes = artisanProgrammeRepo.findAllByArtisan(rowData)
+                    for(each in programmes){
+                        stringBuilder.append(each.programme?.title ?: "")
+                        if(each.programme?.batch?.isNotEmpty() == true)
+                            stringBuilderBY.append(each.programme?.batch?: "")
+                        else
+                            stringBuilderBY.append(each.programme?.year?: "")
                 }
                     dataRow.createCell(6).setCellValue(stringBuilder.toString())
-            }}
+                    dataRow.createCell(7).setCellValue(stringBuilderBY.toString())
+                }}
             response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
             response.setHeader("Content-Disposition", "attachment; filename=my-table-data.xlsx");
             workbook.write(response.getOutputStream());

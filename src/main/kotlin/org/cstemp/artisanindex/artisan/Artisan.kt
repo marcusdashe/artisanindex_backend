@@ -1,5 +1,6 @@
 package org.cstemp.artisanindex.artisan
 
+import com.fasterxml.jackson.annotation.JsonManagedReference
 import jakarta.persistence.*
 import jakarta.validation.constraints.Size
 import org.cstemp.artisanindex.programme.Programme
@@ -37,28 +38,20 @@ class Artisan {
     @Column(name="state", nullable = false)
     var state: String? = null
 
-    @OneToMany(mappedBy = "artisan", cascade = arrayOf(CascadeType.ALL), fetch = FetchType.LAZY, orphanRemoval = true)
-    private val programmes: MutableSet<Programme> = mutableSetOf<Programme>()
+
+    @ManyToMany
+    @JoinTable(
+        name = "artisan_programme",
+        joinColumns = [JoinColumn(name = "artisan_id")],
+        inverseJoinColumns = [JoinColumn(name = "programme_id")]
+    )
+    var programmes: MutableList<Programme> = mutableListOf()
 
     @Column(nullable = false)
     @Temporal(TemporalType.TIMESTAMP)
     var created: Date = Date(System.currentTimeMillis())
 
-    fun addProgramme(programme: Programme) {
-        programmes.add(programme)
-        programme.artisan = this
-    }
+
 }
 
-//
-//    public void addProgramme(Programme programme) {
-//        programmes.add(programme);
-//        programme.setArtisan(this);
-//    }
-//
-//    public void removeProgramme(Programme programme) {
-//        programmes.remove(programme);
-//        programme.setArtisan(null);
-//    }
-//
-//}
+

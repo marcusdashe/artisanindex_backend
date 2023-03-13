@@ -1,5 +1,6 @@
 package org.cstemp.artisanindex.programme
 
+import com.fasterxml.jackson.annotation.JsonBackReference
 import jakarta.persistence.*
 import jakarta.validation.constraints.Size
 import org.cstemp.artisanindex.artisan.Artisan
@@ -17,6 +18,13 @@ class Programme {
     @Column(name="title", nullable = false)
     var title: String? = null
 
+
+    @Column(name = "batch", nullable = true)
+    var batch: String = ""
+
+
+    @Column(name = "year", nullable = true)
+    var year: String = ""
     @Column(name = "description", nullable = true)
     var description: String? = null
 
@@ -24,7 +32,24 @@ class Programme {
     @Temporal(TemporalType.TIMESTAMP)
     var created: Date = Date(System.currentTimeMillis())
 
-    @ManyToOne(fetch = FetchType.EAGER)
-    var artisan: Artisan? = null
+    @ManyToMany
+    @JoinTable(
+        name = "artisan_programme",
+        joinColumns = [JoinColumn(name = "programme_id")],
+        inverseJoinColumns = [JoinColumn(name = "artisan_id")]
+    )
+    @JsonBackReference
+    var artisans: MutableList<Artisan> = mutableListOf()
+
+    fun addArtisan(artisan: Artisan) {
+        artisans.add(artisan)
+        artisan.programmes.add(this)
+    }
+
+    fun removeArtisan(artisan: Artisan) {
+        artisans.remove(artisan)
+        artisan.programmes.remove(this)
+    }
+
 }
 
